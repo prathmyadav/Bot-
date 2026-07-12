@@ -1,1 +1,1 @@
-FastTelethon
+Telethon
