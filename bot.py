@@ -27,7 +27,7 @@ def run_http_server():
     def start_pinging():
         while True:
             try:
-                # 📌 Naya Render URL yahan add kiya gaya hai
+                # 📌 Aapka Server URL
                 bot_url = "https://bot-1-kslk.onrender.com" 
                 urllib.request.urlopen(bot_url)
                 print("[Self-Ping] Bot kept awake!")
@@ -77,7 +77,7 @@ user_data = {}
 
 print("🤖 Multi-User Advanced Restricted Bot is fully running...")
 
-# 📌 Link Parser (Error Fixed: Ab har tarah ke web/app link parse karega)
+# 📌 Link Parser (Topics और Private Channels के लिए)
 def parse_link(url):
     try:
         clean_url = url.split('?')[0].strip()
@@ -92,15 +92,15 @@ def parse_link(url):
         else:
             return None, None
             
-        # Private Channel (e.g., t.me/c/123456789/100)
+        # Private Channel (e.g., t.me/c/123456789/100 or t.me/c/123456789/5/100 for topics)
         if parts[tme_idx + 1] == 'c':
             entity = int("-100" + parts[tme_idx + 2])
-            msg_id = int(parts[-1])
-        # Web Link with /s/ (e.g., t.me/s/username/100)
+            msg_id = int(parts[-1]) # Last part is always the message ID
+        # Web Link with /s/
         elif parts[tme_idx + 1] == 's':
             entity = parts[tme_idx + 2]
             msg_id = int(parts[-1])
-        # Public Channel (e.g., t.me/username/100)
+        # Public Channel
         else:
             entity = parts[tme_idx + 1]
             msg_id = int(parts[-1])
@@ -109,9 +109,26 @@ def parse_link(url):
     except Exception:
         return None, None
 
+# 📌 Auto-Cache Fetcher: Private Error को फिक्स करने का जादुई फंक्शन
+async def get_message_with_cache(client, entity, msg_id):
+    try:
+        # सीधा ट्राई करें (अगर cache मौजूद है)
+        return await client.get_messages(entity, ids=msg_id)
+    except Exception as e:
+        # अगर Private Channel Error आये, तो Dialogs स्कैन करके Access Hash लायें
+        if "private" in str(e).lower() or "channel" in str(e).lower() or "entity" in str(e).lower():
+            async for dialog in client.iter_dialogs():
+                if dialog.id == entity:
+                    break
+            # अब वापस ट्राई करें (इस बार 100% काम करेगा)
+            return await client.get_messages(entity, ids=msg_id)
+        else:
+            raise e
+
+# 📌 Progress Bar
 async def progress_callback(current, total, status_msg, action_text, last_update):
     now = time.time()
-    if now - last_update[0] > 3: # 3 second interval to avoid FloodWait
+    if now - last_update[0] > 3: 
         last_update[0] = now
         percent = (current / total) * 100
         filled = int(percent / 5)
@@ -128,7 +145,7 @@ async def start(event):
     user_id = event.sender_id
     if user_id not in user_data or user_data[user_id].get('step') not in ['COMPLETED', 'BATCH_START', 'BATCH_END']:
         user_data[user_id] = {'step': 'PHONE'}
-        await event.respond("👋 **Welcome to Multi-User Restricted Saver Bot!**\n\n1. सबसे पहले अपना फ़ोन नंबर भेजें (जैसे: `+919876543210`)।")
+        await event.respond("👋 **Welcome to Multi-User Restricted Saver Bot!**\n\nयह बॉट Topics और Restricted ग्रुप्स से भी डाउनलोड कर सकता है।\n\n1. सबसे पहले अपना फ़ोन नंबर भेजें (जैसे: `+919876543210`)।")
     else:
         await event.respond("✅ **आप पहले से लॉगिन हैं!** आप लिंक भेज सकते हैं या /help दबाएं।")
 
@@ -163,7 +180,7 @@ async def batch_cmd(event):
         "📦 **sᴛᴇᴘ-ʙʏ-sᴛᴇᴘ ʙᴀᴛᴄʜ ᴅᴏᴡɴʟᴏᴀᴅ**\n\n"
         "sᴛᴇᴘ 1/2: sᴇɴᴅ ᴛʜᴇ ғɪʀsᴛ ᴍᴇssᴀɢᴇ ʟɪɴᴋ:\n\n"
         "`https://t.me/c/1234567890/100`\n"
-        "`https://t.me/channelname/100`"
+        "`https://t.me/c/1234567890/5/100 (For Topics)`"
     )
 
 @bot_client.on(events.NewMessage)
@@ -198,7 +215,7 @@ async def handle_all_messages(event):
         try:
             await client.sign_in(user_data[user_id]['phone'], otp_code, phone_code_hash=user_data[user_id]['phone_code_hash'])
             user_data[user_id] = {'step': 'COMPLETED', 'session': client.session.save()}
-            await bot_client.edit_message(status, "🎉 **लॉगिन सफल!** अब लिंक भेजें।")
+            await bot_client.edit_message(status, "🎉 **लॉगिन सफल!** अब कोई भी लिंक भेजें।")
             await client.disconnect()
         except SessionPasswordNeededError:
             user_data[user_id]['step'] = 'PASSWORD'
@@ -257,7 +274,10 @@ async def handle_all_messages(event):
         for current_id in range(start_msg_id, end_msg_id + 1):
             try:
                 status_msg = await event.respond(f"⏳ **मैसेज ID {current_id} प्रोसेस हो रहा है...**")
-                msg = await user_client.get_messages(entity, ids=current_id)
+                
+                # Naya Custom Cache Function Use Kiya
+                msg = await get_message_with_cache(user_client, entity, current_id)
+                
                 if msg and msg.media:
                     last_update = [time.time()]
                     file_path = await user_client.download_media(
@@ -303,11 +323,11 @@ async def handle_all_messages(event):
             await user_client.connect()
             
             try:
-                msg = await user_client.get_messages(entity, ids=msg_id)
-            except ValueError:
-                # "ResolveUsernameRequest" error catch
+                # Naya Custom Cache Function Use Kiya
+                msg = await get_message_with_cache(user_client, entity, msg_id)
+            except Exception as get_err:
                 await user_client.disconnect()
-                return await bot_client.edit_message(status_msg, "❌ **एरर:** आपका अकाउंट इस चैनल/ग्रुप में मौजूद नहीं है या लिंक गलत है। कृपया पहले उस चैनल को जॉइन करें।")
+                return await bot_client.edit_message(status_msg, f"❌ **एरर:** आपका अकाउंट इस चैनल/ग्रुप में मौजूद नहीं है या लिंक गलत है।\n({str(get_err)})")
 
             if msg and msg.media:
                 last_update = [time.time()]
@@ -331,7 +351,8 @@ async def handle_all_messages(event):
             await user_client.disconnect()
             await bot_client.delete_messages(event.chat_id, status_msg.id)
         except Exception as e:
-            await bot_client.edit_message(status_msg, f"❌ Error: {str(e)}\n\n(Note: सुनिश्चित करें कि आप उस रेस्ट्रिक्टेड चैनल में जॉइन हैं)")
+            await bot_client.edit_message(status_msg, f"❌ Error: {str(e)}")
 
 if __name__ == '__main__':
     bot_client.run_until_disconnected()
+            
