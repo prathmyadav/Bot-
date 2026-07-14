@@ -11,6 +11,10 @@ from telethon.errors import SessionPasswordNeededError, PhoneCodeInvalidError, F
 from telethon.tl.functions.bots import SetBotCommandsRequest
 from telethon.tl.types import BotCommand, BotCommandScopeDefault
 
+# --- Custom Exception Cancel Karne Ke Liye ---
+class CancelProcess(Exception):
+    pass
+
 # --- Render के लिए Dummy HTTP Server ---
 class DummyServer(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -27,11 +31,9 @@ def run_http_server():
     def start_pinging():
         while True:
             try:
-                # 📌 Aapka Server URL
                 bot_url = "https://bot-1-kslk.onrender.com" 
                 urllib.request.urlopen(bot_url)
-                print("[Self-Ping] Bot kept awake!")
-            except Exception as e:
+            except Exception:
                 pass
             time.sleep(300) 
 
@@ -53,21 +55,20 @@ BOT_TOKEN = '8821344722:AAFbrvqZHA43Wuc2hMB0WG-t1YGE4vsPzu4'
 bot_client = TelegramClient('main_bot_session', API_ID, API_HASH)
 bot_client.start(bot_token=BOT_TOKEN)
 
-# 📌 Side Menu Bar Commands Setup
+# 📌 Side Menu Bar Setup
 async def set_bot_commands():
     try:
         commands = [
             BotCommand(command="start", description="Start the bot & Login"),
             BotCommand(command="help", description="Show Help Menu"),
             BotCommand(command="batch", description="Batch Download (Step-by-step)"),
-            BotCommand(command="cancel", description="Cancel Current Action")
+            BotCommand(command="cancel", description="Stop & Cancel Current Action")
         ]
         await bot_client(SetBotCommandsRequest(
             scope=BotCommandScopeDefault(),
             lang_code='',
             commands=commands
         ))
-        print("✅ Side Menu Bar commands successfully set!")
     except Exception as e:
         print(f"⚠️ Failed to set commands: {e}")
 
@@ -77,7 +78,7 @@ user_data = {}
 
 print("🤖 Multi-User Advanced Restricted Bot is fully running...")
 
-# 📌 Link Parser (Topics और Private Channels के लिए)
+# 📌 Link Parser (Topics और Private Channels के लिए 100% Accurate)
 def parse_link(url):
     try:
         clean_url = url.split('?')[0].strip()
@@ -92,10 +93,10 @@ def parse_link(url):
         else:
             return None, None
             
-        # Private Channel (e.g., t.me/c/123456789/100 or t.me/c/123456789/5/100 for topics)
+        # Private Channel & Topics (e.g., t.me/c/123456789/100 or t.me/c/123456789/5/100)
         if parts[tme_idx + 1] == 'c':
             entity = int("-100" + parts[tme_idx + 2])
-            msg_id = int(parts[-1]) # Last part is always the message ID
+            msg_id = int(parts[-1])
         # Web Link with /s/
         elif parts[tme_idx + 1] == 's':
             entity = parts[tme_idx + 2]
@@ -109,24 +110,38 @@ def parse_link(url):
     except Exception:
         return None, None
 
-# 📌 Auto-Cache Fetcher: Private Error को फिक्स करने का जादुई फंक्शन
-async def get_message_with_cache(client, entity, msg_id):
+# 📌 Entity Cache Resolver: "PeerChannel Error" को हमेशा के लिए फिक्स करता है
+async def get_message_with_cache(client, entity_id, msg_id):
     try:
-        # सीधा ट्राई करें (अगर cache मौजूद है)
-        return await client.get_messages(entity, ids=msg_id)
+        # पहले सीधे कोशिश करें
+        return await client.get_messages(entity_id, ids=msg_id)
     except Exception as e:
-        # अगर Private Channel Error आये, तो Dialogs स्कैन करके Access Hash लायें
-        if "private" in str(e).lower() or "channel" in str(e).lower() or "entity" in str(e).lower():
+        error_str = str(e).lower()
+        if "find the input entity" in error_str or "private" in error_str or "channel" in error_str:
+            print(f"[Cache Miss] Fetching dialogs for entity: {entity_id}")
+            # अगर एरर आये, तो डायलॉग्स (चैट लिस्ट) में ग्रुप को ढूंढें
+            target_entity = None
             async for dialog in client.iter_dialogs():
-                if dialog.id == entity:
+                if dialog.id == entity_id:
+                    target_entity = dialog.entity
                     break
-            # अब वापस ट्राई करें (इस बार 100% काम करेगा)
-            return await client.get_messages(entity, ids=msg_id)
+            
+            if target_entity:
+                # सटीक Entity Object का उपयोग करके मैसेज लाएं
+                return await client.get_messages(target_entity, ids=msg_id)
+            else:
+                # आखिरी कोशिश: Get Entity
+                target_entity = await client.get_entity(entity_id)
+                return await client.get_messages(target_entity, ids=msg_id)
         else:
             raise e
 
-# 📌 Progress Bar
-async def progress_callback(current, total, status_msg, action_text, last_update):
+# 📌 Progress Bar with Instant Cancel Support
+async def progress_callback(current, total, status_msg, action_text, last_update, user_id):
+    # अगर यूजर ने कैंसिल कर दिया है, तो तुरन्त एरर रेज करके प्रोसेस रोक दें
+    if user_data.get(user_id, {}).get('step') == 'CANCELLED':
+        raise CancelProcess("User stopped the process")
+
     now = time.time()
     if now - last_update[0] > 3: 
         last_update[0] = now
@@ -143,10 +158,11 @@ async def progress_callback(current, total, status_msg, action_text, last_update
 @bot_client.on(events.NewMessage(pattern='/start'))
 async def start(event):
     user_id = event.sender_id
-    if user_id not in user_data or user_data[user_id].get('step') not in ['COMPLETED', 'BATCH_START', 'BATCH_END']:
+    if user_id not in user_data or user_data[user_id].get('step') not in ['COMPLETED', 'BATCH_START', 'BATCH_END', 'PROCESSING']:
         user_data[user_id] = {'step': 'PHONE'}
-        await event.respond("👋 **Welcome to Multi-User Restricted Saver Bot!**\n\nयह बॉट Topics और Restricted ग्रुप्स से भी डाउनलोड कर सकता है।\n\n1. सबसे पहले अपना फ़ोन नंबर भेजें (जैसे: `+919876543210`)।")
+        await event.respond("👋 **Welcome to Multi-User Restricted Saver Bot!**\n\nयह बॉट Topics और Restricted ग्रुप्स से भी मीडिया डाउनलोड कर सकता है।\n\n1. सबसे पहले अपना फ़ोन नंबर भेजें (जैसे: `+919876543210`)।")
     else:
+        user_data[user_id]['step'] = 'COMPLETED'
         await event.respond("✅ **आप पहले से लॉगिन हैं!** आप लिंक भेज सकते हैं या /help दबाएं।")
 
 @bot_client.on(events.NewMessage(pattern='/help'))
@@ -155,7 +171,7 @@ async def help_cmd(event):
         "🛠 **MAIN MENU**\n\n"
         "👋 /start - Start & Login\n"
         "❓ /help - Show Help Menu\n"
-        "❌ /cancel - Cancel Action\n"
+        "❌ /cancel - Cancel Action (Turant rokne ke liye)\n"
         "📦 /batch - Batch Download"
     )
     await event.respond(help_text)
@@ -163,24 +179,23 @@ async def help_cmd(event):
 @bot_client.on(events.NewMessage(pattern='/cancel'))
 async def cancel_cmd(event):
     user_id = event.sender_id
-    if user_id in user_data and user_data[user_id].get('step') in ['BATCH_START', 'BATCH_END']:
-        user_data[user_id]['step'] = 'COMPLETED'
-        await event.respond("❌ **करंट एक्शन कैंसिल कर दिया गया है।**")
+    if user_id in user_data:
+        user_data[user_id]['step'] = 'CANCELLED'
+        await event.respond("🛑 **Cancel Command Received!**\nचल रहे सभी डाउनलोड/अपलोड तुरंत रोके जा रहे हैं...")
     else:
         await event.respond("कोई भी पेंडिंग एक्शन नहीं मिला।")
 
 @bot_client.on(events.NewMessage(pattern='/batch'))
 async def batch_cmd(event):
     user_id = event.sender_id
-    if user_id not in user_data or user_data[user_id].get('step') not in ['COMPLETED', 'BATCH_START', 'BATCH_END']:
-        return await event.respond("⚠️ **कृपया पहले /start करके लॉगिन करें!**")
+    if user_id not in user_data or user_data[user_id].get('step') not in ['COMPLETED', 'CANCELLED']:
+        return await event.respond("⚠️ **कृपया पहले /start करके लॉगिन करें!** या चल रहे प्रोसेस को पूरा होने दें।")
     
     user_data[user_id]['step'] = 'BATCH_START'
     await event.respond(
         "📦 **sᴛᴇᴘ-ʙʏ-sᴛᴇᴘ ʙᴀᴛᴄʜ ᴅᴏᴡɴʟᴏᴀᴅ**\n\n"
         "sᴛᴇᴘ 1/2: sᴇɴᴅ ᴛʜᴇ ғɪʀsᴛ ᴍᴇssᴀɢᴇ ʟɪɴᴋ:\n\n"
-        "`https://t.me/c/1234567890/100`\n"
-        "`https://t.me/c/1234567890/5/100 (For Topics)`"
+        "`https://t.me/c/1234567890/100`"
     )
 
 @bot_client.on(events.NewMessage)
@@ -264,25 +279,26 @@ async def handle_all_messages(event):
             user_data[user_id]['step'] = 'COMPLETED'
             return await event.respond(f"❌ लिमिट 100 मैसेजेस की है! आपने {total_msgs} सेलेक्ट किये हैं।")
 
-        user_data[user_id]['step'] = 'COMPLETED'
-        await event.respond(f"🚀 **Fast Batch Download शुरू... ({total_msgs} फाइल्स)**")
+        user_data[user_id]['step'] = 'PROCESSING'
+        await event.respond(f"🚀 **Batch Download शुरू... ({total_msgs} फाइल्स)**\n(रद्द करने के लिए /cancel दबाएं)")
         
         user_session = user_data[user_id]['session']
         user_client = TelegramClient(StringSession(user_session), API_ID, API_HASH)
         await user_client.connect()
 
         for current_id in range(start_msg_id, end_msg_id + 1):
+            if user_data[user_id].get('step') == 'CANCELLED':
+                break
+
+            status_msg = await event.respond(f"⏳ **मैसेज ID {current_id} प्रोसेस हो रहा है...**")
+            file_path = None
             try:
-                status_msg = await event.respond(f"⏳ **मैसेज ID {current_id} प्रोसेस हो रहा है...**")
-                
-                # Naya Custom Cache Function Use Kiya
                 msg = await get_message_with_cache(user_client, entity, current_id)
-                
                 if msg and msg.media:
                     last_update = [time.time()]
                     file_path = await user_client.download_media(
                         msg, 
-                        progress_callback=lambda c, t: progress_callback(c, t, status_msg, "Fast Downloading", last_update)
+                        progress_callback=lambda c, t: progress_callback(c, t, status_msg, "Fast Downloading", last_update, user_id)
                     )
                     
                     last_update = [time.time()]
@@ -291,14 +307,19 @@ async def handle_all_messages(event):
                         event.chat_id, 
                         file_path, 
                         caption=caption_text,
-                        progress_callback=lambda c, t: progress_callback(c, t, status_msg, "Fast Uploading", last_update)
+                        progress_callback=lambda c, t: progress_callback(c, t, status_msg, "Fast Uploading", last_update, user_id)
                     )
-                    if os.path.exists(file_path): os.remove(file_path)
+                    if file_path and os.path.exists(file_path): os.remove(file_path)
                     await bot_client.delete_messages(event.chat_id, status_msg.id)
                 else:
                     await bot_client.delete_messages(event.chat_id, status_msg.id)
                 
                 await asyncio.sleep(1.5)
+
+            except CancelProcess:
+                if file_path and os.path.exists(file_path): os.remove(file_path)
+                await bot_client.edit_message(status_msg, "🛑 **प्रोसेस यूजर द्वारा रद्द कर दिया गया!**")
+                break
             except FloodWaitError as e:
                 await event.respond(f"⚠️ Telegram ने ब्लॉक किया है, {e.seconds} सेकंड इंतज़ार कर रहा हूँ...")
                 await asyncio.sleep(e.seconds)
@@ -306,34 +327,36 @@ async def handle_all_messages(event):
                 pass
         
         await user_client.disconnect()
-        return await event.respond("✅ **Batch Download पूरी तरह कम्पलीट हो गया है!**")
+        if user_data[user_id].get('step') == 'CANCELLED':
+            user_data[user_id]['step'] = 'COMPLETED'
+            return await event.respond("🛑 **Batch Download सफलतापूर्वक रोक दिया गया है।**")
+        else:
+            user_data[user_id]['step'] = 'COMPLETED'
+            return await event.respond("✅ **Batch Download पूरी तरह कम्पलीट हो गया है!**")
 
     # Single Link Logic
     if "t.me/" in text:
-        if user_id not in user_data or user_data[user_id].get('step') != 'COMPLETED':
-            return await event.respond("⚠️ **कृपया पहले /start करके लॉगिन करें!**")
+        if user_id not in user_data or user_data[user_id].get('step') not in ['COMPLETED', 'CANCELLED']:
+            return await event.respond("⚠️ **कृपया पहले /start करके लॉगिन करें!** या कोई चल रहा प्रोसेस पूरा होने दें।")
 
         entity, msg_id = parse_link(text)
         if not entity: return await event.respond("❌ अवैध लिंक। कृपया सही फॉर्मेट में लिंक भेजें।")
 
-        status_msg = await event.respond("⚡ **फास्ट डाउनलोड शुरू हो रहा है...**")
+        user_data[user_id]['step'] = 'PROCESSING'
+        status_msg = await event.respond("⚡ **फास्ट डाउनलोड शुरू हो रहा है...**\n(रद्द करने के लिए /cancel दबाएं)")
+        
+        user_session = user_data[user_id]['session']
+        user_client = TelegramClient(StringSession(user_session), API_ID, API_HASH)
+        await user_client.connect()
+        file_path = None
+        
         try:
-            user_session = user_data[user_id]['session']
-            user_client = TelegramClient(StringSession(user_session), API_ID, API_HASH)
-            await user_client.connect()
-            
-            try:
-                # Naya Custom Cache Function Use Kiya
-                msg = await get_message_with_cache(user_client, entity, msg_id)
-            except Exception as get_err:
-                await user_client.disconnect()
-                return await bot_client.edit_message(status_msg, f"❌ **एरर:** आपका अकाउंट इस चैनल/ग्रुप में मौजूद नहीं है या लिंक गलत है।\n({str(get_err)})")
-
+            msg = await get_message_with_cache(user_client, entity, msg_id)
             if msg and msg.media:
                 last_update = [time.time()]
                 file_path = await user_client.download_media(
                     msg, 
-                    progress_callback=lambda c, t: progress_callback(c, t, status_msg, "Fast Downloading", last_update)
+                    progress_callback=lambda c, t: progress_callback(c, t, status_msg, "Fast Downloading", last_update, user_id)
                 )
                 
                 last_update = [time.time()]
@@ -342,17 +365,22 @@ async def handle_all_messages(event):
                     event.chat_id, 
                     file_path, 
                     caption=caption_text,
-                    progress_callback=lambda c, t: progress_callback(c, t, status_msg, "Fast Uploading", last_update)
+                    progress_callback=lambda c, t: progress_callback(c, t, status_msg, "Fast Uploading", last_update, user_id)
                 )
-                if os.path.exists(file_path): os.remove(file_path)
+                if file_path and os.path.exists(file_path): os.remove(file_path)
+                await bot_client.delete_messages(event.chat_id, status_msg.id)
             else:
                 await bot_client.edit_message(status_msg, "❌ यह मैसेज खाली है या इसमें कोई फाइल/वीडियो नहीं है।")
                 
-            await user_client.disconnect()
-            await bot_client.delete_messages(event.chat_id, status_msg.id)
+        except CancelProcess:
+            if file_path and os.path.exists(file_path): os.remove(file_path)
+            await bot_client.edit_message(status_msg, "🛑 **डाउनलोड यूजर द्वारा रद्द कर दिया गया!**")
         except Exception as e:
-            await bot_client.edit_message(status_msg, f"❌ Error: {str(e)}")
+            await bot_client.edit_message(status_msg, f"❌ Error: {str(e)}\n\n(Note: सुनिश्चित करें कि आप उस रेस्ट्रिक्टेड चैनल में जॉइन हैं)")
+        finally:
+            await user_client.disconnect()
+            user_data[user_id]['step'] = 'COMPLETED'
 
 if __name__ == '__main__':
     bot_client.run_until_disconnected()
-            
+    
